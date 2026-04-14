@@ -13,17 +13,47 @@ Build an interactive "Myth or Fact" quiz app using React. You'll learn the core 
 
 ## How to Run
 
+First, open a terminal and navigate to this folder (`week-2-react`).
+
+### Step 1 — Install dependencies (first time only)
+
+`npm install` downloads all the libraries the app needs (React, Vite, etc.) into a `node_modules` folder. You only need to run this **once**, or again if you pull new changes from GitHub.
+
+**Mac** (Terminal):
 ```bash
-# Open a terminal in this folder, then:
-npm install        # First time only — downloads dependencies
-npm run dev        # Starts the dev server
+cd week-2-react
+npm install
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+**Windows** (Command Prompt or PowerShell):
+```bash
+cd week-2-react
+npm install
+```
 
-The app will auto-reload when you save changes to any file.
+You'll see a progress bar while it downloads. When it finishes you'll see something like `added 200 packages`. This is normal.
 
-Press `Ctrl+C` in the terminal to stop the server.
+### Step 2 — Start the app
+
+`npm run dev` starts a local development server on your machine so you can view the app in your browser.
+
+**Mac** (Terminal):
+```bash
+npm run dev
+```
+
+**Windows** (Command Prompt or PowerShell):
+```bash
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173) in your browser. You should see the quiz app.
+
+The app will **auto-reload** when you save changes to any file — so you can edit code, save, and see the result instantly in the browser.
+
+### Stopping the server
+
+Press `Ctrl+C` in the terminal to stop the server. You'll need to run `npm run dev` again to restart it.
 
 ## Tasks
 

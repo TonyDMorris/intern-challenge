@@ -1,0 +1,589 @@
+Learn Tab Restructure — Detailed Implementation Plan
+
+Context
+
+The current Videos/Feed tab is a flat TikTok-style video scroller with inline MCQs. Games live on a completely separate tab launched by the teacher. This restructure replaces the Feed tab with a Learn tab where each module becomes a scrollable digital workbook: video → key takeaways →
+quiz → game round. Tony handles backend + frontend scaffolding; Eman handles styling/polish.
+
+---
+
+1.  Expand TikTokModule Model — Key Takeaways + Linked Game Round
+
+Requirement (PRD)
+
+▎ "Key takeaways block (new). New interactive page document layout with 3 to statements boxes summarising the core facts from the video. Written in bite-sized, youth-accessible language. This has tts and dyslexic overlay features as well. Exists as a comprehension safety net so
+▎ students who zone out during the video still absorb the key points before the quiz."
+
+▎ "Game round block. A specific game round linked to this module's topic. Completing the quiz makes the game round playable. The game round is thematically tied to the module content."
+
+Requirement (Transcript)
+
+▎ "We need to add, you know, summary text. Bite-sized chunks that really, you know, add onto the video, and also like help summarise it." (3:02)
+
+▎ "So now what we've done is actually we're gonna have to make and upgrade the games to be more modular by design. So not just the videos, but the games are modular. And we've kind of done this as well, quite well, with some of the games, so Vape Invaders has different rounds. We can
+▎ actually toggle specific rounds inside the learn tab." (5:30)
+
+Why This Change
+
+The TikTokModule struct currently only holds Title, Description, VideoKeys, and Questions. There is no field for summary takeaways and no way to associate a specific game round with a module. Without these fields, the Learn tab cannot render the workbook flow or know which game to
+embed after the quiz.
+
+Code Change
+
+File: backend/internal/cms/models.go (lines 159-165)
+
+Current:
+type TikTokModule struct {
+Title string `json:"title"`
+Description string `json:"description"`
+VideoKeys []string `json:"videoKeys"`
+Questions []TikTokModuleQuestion `json:"questions"`
+}
+
+Proposed:
+type TikTokModule struct {
+Title string `json:"title"`
+Description string `json:"description"`
+VideoKeys []string `json:"videoKeys"`
+Questions []TikTokModuleQuestion `json:"questions"`
+KeyTakeaways []KeyTakeaway `json:"keyTakeaways,omitempty"`
+LinkedGame \*LinkedGameRound `json:"linkedGame,omitempty"`
+}
+
+// KeyTakeaway represents a single summary statement shown after the video
+type KeyTakeaway struct {
+Text string `json:"text"`
+}
+
+// LinkedGameRound references a specific round within a game engine,
+// tying this module's content to a particular game round
+type LinkedGameRound struct {
+GameType string `json:"gameType"` // "chainlink", "vapeinvader", "spotthe", "thebox"
+RoundID string `json:"roundId"` // ID within that game's config rounds array
+}
+
+All new fields use omitempty so existing Redis data deserializes without error. No migration needed — new fields are populated when admins update modules in the CMS.
+
+Frontend Type Change
+
+File: src/types/student.ts
+
+Add corresponding TypeScript interfaces:
+interface KeyTakeaway {
+text: string;
+}
+
+interface LinkedGameRound {
+gameType: 'chainlink' | 'vapeinvader' | 'spotthe' | 'thebox';
+roundId: string;
+}
+
+Update StudentTikTokModule to include:
+keyTakeaways?: KeyTakeaway[];
+linkedGame?: LinkedGameRound;
+
+---
+
+2.  Add Round Grouping to Chainlink
+
+Requirement (PRD)
+
+▎ "Chain Link: Add round grouping in CMS. Questions get assigned to rounds. Engine accepts roundId and plays only that round's questions. Category tags already exist so mapping is straightforward to the tags in a way and a round could contain specific tags e.g whats in a vape,
+▎ environment tab in part 1"
+
+Requirement (Transcript)
+
+▎ "The box, you know how we have different challenge rounds, and we have alert and more basic rounds, they can, they're gonna have to be a bit more modular by design where we have a bit of a challenge round, and we can toggle on the harder questions onto that as a round." (7:04)
+
+Why This Change
+
+Chainlink currently has a flat Questions array with an optional Category field on each question. There is no concept of "rounds" — you either play all questions or nothing. For the Learn tab to embed "Chain Link Round 1: Chemicals", we need a way to group questions into named rounds
+and request only that round's questions via the API.
+
+Code Change
+
+File: backend/internal/cms/models.go (lines 29-34)
+
+Current:
+type ChainlinkGame struct {
+Questions []ChainlinkQuestion `json:"questions"`
+TwoTruthsLieSets []TwoTruthsLieSet `json:"twoTruthsLieSets,omitempty"`
+MysteryCardSettings MysteryCardSettings `json:"mysteryCardSettings"`
+UpdatedAt time.Time `json:"updatedAt"`
+}
+
+Proposed:
+type ChainlinkGame struct {
+Questions []ChainlinkQuestion `json:"questions"`
+Rounds []ChainlinkRound `json:"rounds,omitempty"`
+TwoTruthsLieSets []TwoTruthsLieSet `json:"twoTruthsLieSets,omitempty"`
+MysteryCardSettings MysteryCardSettings `json:"mysteryCardSettings"`
+UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// ChainlinkRound groups a subset of questions into a named round
+// that can be played independently via the Learn tab
+type ChainlinkRound struct {
+ID string `json:"id"`
+Title string `json:"title"`
+QuestionUUIDs []string `json:"questionUuids"` // references ChainlinkQuestion.UUID
+IsActive bool `json:"isActive"`
+}
+
+The flat Questions array remains the source of truth. Rounds reference questions by UUID. When Rounds is empty, all questions form one implicit round (backward compatible with current behavior). The existing Category field on questions can be used as a shortcut when initially assigning
+questions to rounds in the CMS.
+
+API Filtering
+
+File: backend/internal/api/routes.go (or new learn_handlers.go)
+
+When the content endpoint is called with a ?roundId=xxx query parameter, filter the Questions array to only those whose UUIDs appear in the matching ChainlinkRound.QuestionUUIDs. This is API-level filtering — no game engine changes needed.
+
+---
+
+3.  Add Round Grouping to TheBox
+
+Requirement (PRD)
+
+▎ "The Box: Same pattern as Chain Link. Add round grouping. Statements in quick sort and challenge rounds can be grouped to rounds. Sorting mechanic is unchanged. But in learn tab CMS we can configure different rounds of games"
+
+Why This Change
+
+TheBox already has implicit round assignments via RoundAssignment ("sort_1", "sort_2") and ChallengeRound ("challenge_1", "challenge_2") fields on cards. However, there is no formal round list — you can't reference "TheBox Round 1" by ID. For the Learn tab to link a module to a
+specific Box round, we need a typed round list that maps round IDs to the existing assignment keys.
+
+Code Change
+
+File: backend/internal/cms/models.go
+
+Add Rounds to TheBoxConfig:
+type TheBoxRound struct {
+ID string `json:"id"`
+Title string `json:"title"`
+RoundType string `json:"roundType"` // "sort" or "challenge"
+RoundKey string `json:"roundKey"` // "sort_1", "sort_2", "challenge_1", "challenge_2"
+IsActive bool `json:"isActive"`
+}
+
+Add to TheBoxConfig:
+Rounds []TheBoxRound `json:"rounds,omitempty"`
+
+When Rounds is empty, derive them from the existing card assignments (backward compat). When a roundId is provided via API, filter ClearCutCards by RoundAssignment and AmbiguousCards by ChallengeRound matching the selected round's RoundKey.
+
+---
+
+4.  New Learn Block Completion Action Type
+
+Requirement (PRD)
+
+▎ "MCQ gating and progression: Content below the video (takeaways, quiz, game round) is blurred and locked until the video is marked complete."
+
+▎ "Modules unlock sequentially. Module 1 is available when the teacher enables navigation. Module 2 unlocks when Module 1 is complete (video watched, quiz attempted)."
+
+Requirement (Transcript)
+
+▎ "Once the student watches the videos, they see the text, they see the puzzle, but then the rest of the content is blurred as well. So once they complete the puzzle and they get it right, they can then move on to the next section which becomes unblurred." (3:54)
+
+Why This Change
+
+The current ActionModuleInteraction action type bundles video watch + quiz response into a single action submitted at module completion. The Learn tab needs granular per-block tracking — we need to know independently when a video was watched, when takeaways were read, when a quiz was
+passed, and when a game round was played. This drives the unlock/gating logic and the teacher's module progress view.
+
+Code Change
+
+File: backend/internal/room/models.go (after line 282)
+
+ActionLearnBlockComplete ActionType = "learn_block_complete"
+
+The action Data map carries:
+// Data fields for learn_block_complete:
+// "moduleId": int — 1-based module index
+// "blockType": string — "video", "takeaways", "quiz", "game_round"
+// "isCorrect": bool — for quiz blocks, whether all answers were correct
+// "attemptNumber": int — 1 for first attempt, 2+ for retries
+// "score": int — points earned (0 for retries per PRD)
+// "gameType": string — for game_round blocks, e.g. "vapeinvader"
+// "roundId": string — for game_round blocks, the specific round played
+
+This follows the existing action-based analytics pattern. No new models needed — just a new ActionType and data convention.
+
+---
+
+5.  Learn Flow Content Endpoint
+
+Requirement (PRD)
+
+▎ "The Videos tab is renamed to Learn. Inside it, each module is a single scrollable page with content blocks stacked vertically: Video block, Key takeaways block (new), Quiz block, Game round block."
+
+Why This Change
+
+The frontend currently calls GET /api/content/:module/modules/:keyStage/:sessionNumber to get TikTokModuleCollection (modules with videos + questions only). The Learn tab needs the full workbook structure including resolved game round metadata (title, game type). Rather than making the
+frontend call 4+ separate endpoints and stitch them together, a single composite endpoint returns everything needed to render the Learn flow.
+
+Code Change
+
+New file: backend/internal/api/learn_handlers.go
+
+// LearnFlowResponse is the composite response for the Learn tab
+type LearnFlowResponse struct {
+Modules []LearnModule `json:"modules"`
+UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type LearnModule struct {
+ID int `json:"id"` // 1-based
+Title string `json:"title"`
+Description string `json:"description"`
+Videos []string `json:"videos"` // resolved video URLs
+KeyTakeaways []cms.KeyTakeaway `json:"keyTakeaways"`
+Questions []cms.TikTokModuleQuestion `json:"questions"`
+LinkedGame \*ResolvedLinkedGame `json:"linkedGame,omitempty"`
+}
+
+type ResolvedLinkedGame struct {
+GameType string `json:"gameType"`
+RoundID string `json:"roundId"`
+RoundTitle string `json:"roundTitle"` // resolved from the game's config
+}
+
+Handler implementation:
+
+1.  Call cmsService.GetTikTokModulesForModule(ctx, module, keyStage, sessionNumber)
+2.  For each module with a LinkedGame, fetch the relevant game config and resolve the round title
+3.  Return the composite response
+
+Route registration in backend/internal/api/routes.go:
+contentGroup.GET("/:module/learn-flow/:keyStage/:sessionNumber", handlers.GetLearnFlow)
+
+---
+
+6.  Learn Progress / Game Unlock Endpoint
+
+Requirement (PRD)
+
+▎ "As students unlock game rounds through the Learn tab, those rounds appear as playable on Games. Once unlocked, rounds stay playable for the rest of the session."
+
+▎ "Game rounds appear locked by default (greyed out with a lock icon). As the student completes modules in Learn, the corresponding rounds unlock on Games."
+
+Requirement (Transcript)
+
+▎ "We also showed them the different parts of games that are still left to unlock. So complete module 3 to play Chain Link Part 1, complete module 2 to unlock Vape Invaders round 2." (6:13)
+
+Why This Change
+
+The frontend needs to know which modules have been completed and which game rounds are unlocked to render both the Learn tab gating and the Games tab lock states. This data is computed server-side from the student's learn_block_complete actions.
+
+Code Change
+
+File: backend/internal/api/learn_handlers.go
+
+type LearnProgressResponse struct {
+Modules map[int]ModuleBlockProgress `json:"modules"`
+UnlockedGameRounds map[string][]string `json:"unlockedGameRounds"` // gameType -> []roundId
+}
+
+type ModuleBlockProgress struct {
+VideoComplete bool `json:"videoComplete"`
+TakeawaysRead bool `json:"takeawaysRead"`
+QuizPassed bool `json:"quizPassed"`
+GameRoundPlayed bool `json:"gameRoundPlayed"`
+}
+
+Handler logic:
+
+1.  Get student's actions from Room data
+2.  Filter to learn_block_complete actions
+3.  Build progress map per module
+4.  Cross-reference with module LinkedGame references to determine which game rounds are unlocked (quiz passed = round unlocked)
+5.  If Room.AllGamesUnlocked is true, mark everything as unlocked
+
+Route registration:
+studentActionGroup.GET("/learn-progress", handlers.GetLearnProgress)
+
+---
+
+7.  Points Redistribution
+
+Requirement (PRD)
+
+▎ "Points redistribution. Each session in a module contains around 900 to 1100 points and stays the same. Game points (currently 300 per game) get split across the number of game rounds in the game. Quiz points (300 total) get split across module. So if its 6 video learn modules is
+▎ 300/6 per round. If its 5 video modules its 300/5. So each way points are equal across sessions."
+
+Requirement (Transcript)
+
+▎ "The point system, it'll be a lot more then to think about how we organise the points system and make it a bit more, again modular within these different sessions." (8:13)
+
+Why This Change
+
+Currently game points are awarded as a flat bonus per complete game (e.g., 300 for playing all of Chain Link). With games split into rounds across the Learn flow, points need to be distributed per-round so each module's game block awards a proportional share. Quiz points similarly need
+splitting so each module quiz contributes equally.
+
+Code Change
+
+File: backend/internal/points/ (config + calculator)
+
+// Per-module quiz points = 300 / number of modules in session
+// Per-round game points = game's total points / number of rounds in session
+// First-time completion only — retries don't award points
+// Skill-based scoring within games (VapeInvader accuracy, etc.) remains unchanged
+
+The calculator reads the learn_block_complete action's attemptNumber field — only attemptNumber == 1 awards points, matching the PRD:
+
+▎ "If they get the answer right first time they earn full points... Second attempts do not award points."
+
+---
+
+8.  Frontend: Rename Feed → Learn
+
+Requirement (PRD)
+
+▎ "The Videos tab is renamed to Learn."
+
+Code Change
+
+File: src/components/student/StudentDashboard.tsx
+
+Change the nav item:
+// From:
+{ id: "feed", icon: Play, path: "/student/dashboard/feed", label: "Video", color: "..." }
+// To:
+{ id: "learn", icon: BookOpen, path: "/student/dashboard/learn", label: "Learn", color: "..." }
+
+File: src/App.tsx
+
+Update route + add redirect:
+<Route path="learn" element={<StudentLearn />} />
+<Route path="feed" element={<Navigate to="/student/dashboard/learn" replace />} />
+
+---
+
+9.  Frontend: Learn Tab Component (Scaffolding)
+
+Requirement (PRD)
+
+▎ "Each module is a single scrollable page with content blocks stacked vertically: Video block. Key takeaways block. Quiz block. Game round block."
+
+Requirement (Transcript)
+
+▎ "The video tab becomes a learn tab. And then Welcome to Beat modules learn tab, we tell them what's gonna be happening, let's brief them on it, and then they go. And this is our first video module." (2:24)
+
+▎ "As you can see now, it's a lot more interactive, there's more of an experience there, it's more of a workbook, there's more stuff going on, and it feels like this nice flow of like a bite-sized chunk of knowledge." (5:12)
+
+Why This Change
+
+StudentFeed.tsx currently renders a flat array of interleaved video and question ContentItem objects with a TikTok-style single-item scroll. The Learn tab needs a fundamentally different layout — a vertical scrollable workbook per module with four distinct content block types, gating
+logic between blocks, and sequential module progression.
+
+Code Change
+
+New file: src/components/student/pages/StudentLearn.tsx
+
+Core component structure:
+// Fetches learn flow data from GET /api/content/:module/learn-flow/:ks/:sess
+// Fetches learn progress from GET /api/schools/.../learn-progress
+// Renders modules sequentially, each containing:
+// <VideoBlock /> — reuse video player logic extracted from StudentFeed
+// <TakeawaysBlock /> — render key takeaway text items
+// <QuizBlock /> — reuse quiz rendering extracted from StudentFeed
+// <GameRoundBlock /> — "Play Round" card, navigates to game with ?roundId=X
+
+// Gating logic (computed as boolean props, visual treatment is Eman's domain):
+// - Module N+1 locked until Module N quiz passed
+// - Takeaways locked until video complete
+// - Quiz locked until takeaways read
+// - Game round available after quiz (skippable — game is reward not gate)
+
+New files: src/components/student/learn/
+
+- VideoBlock.tsx — extracted from StudentFeed.tsx video rendering
+- TakeawaysBlock.tsx — renders key takeaway items
+- QuizBlock.tsx — extracted from StudentFeed.tsx quiz rendering
+- GameRoundBlock.tsx — renders game round card with play button
+
+Gating Detail (PRD)
+
+▎ "Content below the video (takeaways, quiz, game round) is blurred and locked until the video is marked complete. When the video finishes, the content reveals below."
+
+▎ "If they get it wrong, they can still continue (no hard blocking) but are prompted to retry at the end of the module before unlocking the game round (they must get all mcqs and puzzles right before moving on). Second attempts do not award points."
+
+▎ "Completing the game round is encouraged but not required for progression as the game is the reward, not the gate."
+
+The isLocked boolean computation for each block:
+
+- takeaways.isLocked = !videoCompleted
+- quiz.isLocked = !takeawaysRead
+- gameRound.isLocked = !quizPassed (but skippable for module progression)
+- nextModule.isLocked = !currentModule.quizPassed
+
+---
+
+10. Frontend: Learn Progress Redux Slice
+
+Why This Change
+
+The current modulesSlice.ts tracks ModuleInteractionData (video watches + quiz response per module) but doesn't track the granular block-level completion needed for Learn tab gating. A new slice provides per-module, per-block completion state that drives the UI gating and syncs with
+backend via learn_block_complete actions.
+
+Code Change
+
+New file: src/store/student/slices/learnProgressSlice.ts
+
+interface LearnModuleProgress {
+moduleId: number;
+videoCompleted: boolean;
+takeawaysRead: boolean;
+quizPassed: boolean;
+quizAttempts: number;
+incorrectQuizQuestions: number[]; // question IDs that need retry
+gameRoundPlayed: boolean;
+}
+
+interface LearnProgressState {
+modules: Record<number, LearnModuleProgress>;
+currentModuleId: number;
+}
+
+// Actions:
+// markVideoComplete(moduleId)
+// markTakeawaysRead(moduleId)
+// markQuizPassed(moduleId)
+// markQuizFailed(moduleId, incorrectQuestionIds)
+// markGameRoundPlayed(moduleId)
+// setCurrentModule(moduleId)
+// syncFromServer(serverProgress) — hydrate from learn-progress endpoint
+
+Register in src/store/student/index.ts with redux-persist whitelist.
+
+---
+
+11. Frontend: Games Tab — Round-Based Library
+
+Requirement (PRD)
+
+▎ "The Games tab stays but works differently. Game rounds appear locked by default (greyed out with a lock icon). As the student completes modules in Learn, the corresponding rounds unlock on Games. Once unlocked, rounds stay playable for the rest of the session."
+
+▎ "Students can replay any unlocked round at any time but only gets points first time round or first completed round attempt."
+
+Requirement (Transcript)
+
+▎ "We also showed them the different parts of games that are still left to unlock. So complete module 3 to play Chain Link Part 1, complete module 2 to lock Vape Invaders round 2. And this way they're doing chunks of the game alongside their journey." (6:13)
+
+Why This Change
+
+StudentGames.tsx currently renders one card per game type (Chain Link, Vape Invaders, etc.) with a single "Play" button per game. It needs to show one card per game round, with lock/unlock state driven by the student's Learn tab module progress.
+
+Code Change
+
+File: src/components/student/pages/StudentGames.tsx
+
+Replace the flat game card list with:
+// 1. Fetch learn-flow to get all modules and their linked game rounds
+// 2. Fetch learn-progress to get unlock status
+// 3. Render one card per game round:
+// - Locked: greyed out, lock icon, "Complete Module X to unlock"
+// - Unlocked: game art, round title, "Play" button
+// - Navigate to /student/dashboard/games/{gameType}?roundId={roundId}
+
+---
+
+12. Frontend: Game Components Accept roundId
+
+Requirement (PRD)
+
+▎ "For this to work, every game needs to support being called with a specific round."
+
+▎ "Vape Invaders: Already modular with themed rounds. No engine changes. Just wire round IDs to Learn tab modules."
+▎ "Spot The: Already modular with Easy, Medium, Hard rounds. No engine changes. Just wire round IDs to Learn tab modules."
+▎ "Chain Link: Engine accepts roundId and plays only that round's questions."
+▎ "The Box: Sorting mechanic is unchanged. But in learn tab CMS we can configure different rounds of games."
+
+Why This Change
+
+When a student clicks "Play Round" from the Learn tab or Games tab, the game component needs to filter to only that round's content. VapeInvader and SpotThe already have round arrays in their configs — they just need to read roundId from URL params and filter. Chainlink and TheBox need
+to filter based on the new round grouping.
+
+Code Change
+
+Files: Game components read roundId from useSearchParams():
+
+- VapeInvaderGame.tsx — filter config.rounds to matching roundId (or play all if no param)
+- SpotTheGame.tsx — filter config.rounds to matching roundId
+- ChainlinkGame.tsx — when roundId present, API returns pre-filtered questions (see section 2)
+- TheBoxGame.tsx — when roundId present, API returns pre-filtered cards (see section 3)
+
+No game engine logic changes — just data filtering at the input level.
+
+---
+
+13. Teacher Dashboard: Module Progress View
+
+Requirement (PRD)
+
+▎ "The Manage Games panel is replaced with a Module Progress View showing which students have reached which module in real time, and whether they are watching video, doing the quiz, or playing the game round."
+
+▎ "Teachers can optionally lock later modules for pacing control, but the default is auto-unlock on completion."
+
+Requirement (Transcript)
+
+▎ "This will be a lot easier for teachers cos there's no, it's all just gonna be one big experience in a sense." (1:56)
+
+▎ "The teacher dashboard won't need to manage games, Chain Link will become a non-online game, and it's gonna be like a player type game, in a sense." (7:50)
+
+Why This Change
+
+With games integrated into the Learn flow, teachers no longer need to manually launch games. The Manage Games panel (TeacherGamesAdmin.tsx) should be replaced with a view showing per-student module progress in real-time, derived from the existing WebSocket analytics stream.
+
+Code Change
+
+File: src/components/teacher/TeacherGamesAdmin.tsx (modify or replace)
+
+Display a table/grid:
+Student | Module 1 | Module 2 | Module 3 | ...
+Alice | ✓ Complete | Quiz (2/3) | Locked |
+Bob | ✓ Complete | ✓ Complete | Video |
+
+Progress data comes from existing WebSocket analytics_snapshot/analytics_update — the student actions already include learn_block_complete events. The teacher dashboard just needs to parse them.
+
+Keep the "Unlock All Games" toggle — it already exists on Room (allGamesUnlocked) and the learn-progress endpoint respects it.
+
+---
+
+Out of Scope (Phase 2 / Future)
+
+PRD Phase 2 Items
+
+▎ "Phase 2 ships after Phase 1 to add more puzzle activities to the workbooks: Sequence ordering, Sentence builder, Connect the pairs, Quick-sort buckets, Odd one out, Slider cause-and-effect, Tap to reveal."
+
+▎ "AI Chatbot: Phase 2. Will become insertable as a block within the Learn flow at specific module positions."
+
+Other Deferred Items
+
+- Cross-session resume via RDS persistence (PRD mentions this but current redis-persist + redux-persist covers single-session)
+- Playbook integration into Learn flow (capstone game, stays at end of final module for now)
+- CMS admin UI for key takeaways and linked game round editing (Eman builds UI, backend already accepts the data after Phase 1)
+- Final module-to-game-round mappings (Olly and Sam to confirm)
+
+---
+
+Execution Order
+
+Phase 1: Backend models (sections 1-4)
+↓
+Phase 2: API endpoints (sections 5-6) ←→ Frontend types + route rename (sections 8, 5F)
+↓ ↓
+Phase 3: Points redistribution (section 7) Learn tab component + Redux (sections 9-10)
+↓ ↓
+Phase 4: Game round filtering (section 12) Games tab update (section 11)
+↓ ↓
+Phase 5: Teacher dashboard (section 13)
+
+Backend model changes (1-4) can start immediately. Frontend scaffolding (8-10) can start in parallel using mock data. API endpoints (5-6) bridge the two. Game filtering (12) and Games tab (11) depend on both being done.
+
+---
+
+Verification
+
+1.  cd backend && go test ./... after model changes
+2.  docker-compose up — verify learn-flow and learn-progress endpoints
+3.  npm run dev — verify Learn tab renders, gating works, Games tab shows rounds
+4.  End-to-end: complete a full module (video → takeaways → quiz → game round), verify next module unlocks and game round appears on Games tab

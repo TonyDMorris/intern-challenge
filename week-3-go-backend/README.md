@@ -12,10 +12,21 @@ This week you'll connect the React quiz app to a real backend server written in 
 
 ## How to Run
 
-You need **two terminals** open at the same time:
+This week you need **two terminal windows open at the same time** — one for the Go backend server, one for the React frontend. Make sure both terminals start inside the `week-3-go-backend` folder.
+
+---
 
 ### Terminal 1 — Start the Go backend
 
+`go run .` compiles and runs the Go server. It reads all the `.go` files in the current folder, builds them, and starts an HTTP server on port 8080.
+
+**Mac** (Terminal):
+```bash
+cd backend
+go run .
+```
+
+**Windows** (Command Prompt or PowerShell):
 ```bash
 cd backend
 go run .
@@ -29,17 +40,43 @@ You should see:
 ===========================================
 ```
 
-Test it works by opening [http://localhost:8080/api/questions](http://localhost:8080/api/questions) in your browser — you should see JSON data.
+**Verify it works:** open [http://localhost:8080/api/questions](http://localhost:8080/api/questions) in your browser — you should see JSON data (a big block of text with quiz questions).
 
-### Terminal 2 — Start the React frontend
+Leave this terminal running. **Do not close it** — open a second terminal for the next step.
 
+---
+
+### Terminal 2 — Install frontend dependencies and start React
+
+Open a **new/second** terminal window. Navigate to the `frontend` folder inside `week-3-go-backend`.
+
+`npm install` downloads all the libraries the frontend needs (React, Vite, etc.). You only need to run this **once**, or again after pulling new changes.
+
+**Mac** (Terminal):
 ```bash
 cd frontend
-npm install        # First time only
+npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+**Windows** (Command Prompt or PowerShell):
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+You'll see `npm install` download packages (this takes a minute the first time). Then `npm run dev` starts the React dev server.
+
+Open [http://localhost:5173](http://localhost:5173) in your browser. You should see the quiz app.
+
+---
+
+### Stopping the servers
+
+Press `Ctrl+C` in **each** terminal to stop the servers. You'll need to run the commands again to restart them.
+
+**Important:** If the Go backend isn't running, the React app will still work — but it will only show 2 fallback questions instead of the full 10 from the API.
 
 ## Tasks
 
