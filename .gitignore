@@ -3,5 +3,6 @@ dist/
 .DS_Store
 *.log
 
-# Go binary
+# Go binaries
 anti-racism-quiz-api
+game-template-api
